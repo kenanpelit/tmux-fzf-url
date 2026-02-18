@@ -57,7 +57,6 @@ run_open_cmd() {
 	local url="$2"
 
 	[ -z "$cmd" ] && return 1
-	command -v "${cmd%% *}" >/dev/null 2>&1 || return 1
 
 	# Keep URL in positional arg for safe quoting, allow command with extra flags.
 	sh -c "$cmd \"\$1\" >/dev/null 2>&1" sh "$url"
