@@ -19,22 +19,93 @@ fzf_filter() {
 	eval "fzf-tmux $(get_fzf_options)"
 }
 
-# Hata ayıklama log dosyası
-LOG_FILE="/tmp/tmux-fzf-url-debug.log"
-echo "$(date): Script başlatıldı" >"$LOG_FILE"
+LOG_FILE="${TMUX_FZF_URL_LOG_FILE:-/tmp/tmux-fzf-url-debug.log}"
+log() {
+	printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOG_FILE"
+}
 
-custom_open=$3
-echo "custom_open değeri: $custom_open" >>"$LOG_FILE"
+get_tmux_browser() {
+	local line
+	line="$(tmux show-environment -g BROWSER 2>/dev/null || true)"
+	case "$line" in
+		BROWSER=*) printf '%s\n' "${line#BROWSER=}" ;;
+		*) printf '%s\n' "" ;;
+	esac
+}
+
+pick_browser_cmd() {
+	local browser_value="$1"
+	local IFS=':'
+	local candidate
+
+	for candidate in $browser_value; do
+		candidate="${candidate#"${candidate%%[![:space:]]*}"}"
+		candidate="${candidate%"${candidate##*[![:space:]]}"}"
+		[ -z "$candidate" ] && continue
+
+		if command -v "${candidate%% *}" >/dev/null 2>&1; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+
+	return 1
+}
+
+run_open_cmd() {
+	local cmd="$1"
+	local url="$2"
+
+	[ -z "$cmd" ] && return 1
+	command -v "${cmd%% *}" >/dev/null 2>&1 || return 1
+
+	# Keep URL in positional arg for safe quoting, allow command with extra flags.
+	sh -c "$cmd \"\$1\" >/dev/null 2>&1" sh "$url"
+}
 
 open_url() {
 	local url="$1"
-	echo "URL açılıyor: $url" >>"$LOG_FILE"
+	local browser_value=""
+	local browser_cmd=""
 
-	# Doğrudan xdg-open kullan
-	xdg-open "$url" &>/dev/null &
-	echo "xdg-open ile URL açıldı." >>"$LOG_FILE"
-	return 0
+	log "opening URL: $url"
+
+	if run_open_cmd "$custom_open" "$url"; then
+		log "opened with custom command: $custom_open"
+		return 0
+	fi
+
+	browser_value="$(get_tmux_browser)"
+	[ -z "$browser_value" ] && browser_value="${BROWSER:-}"
+	browser_cmd="$(pick_browser_cmd "$browser_value" 2>/dev/null || true)"
+
+	if [ -n "$browser_cmd" ] && run_open_cmd "$browser_cmd" "$url"; then
+		log "opened with BROWSER command: $browser_cmd"
+		return 0
+	fi
+
+	if run_open_cmd "xdg-open" "$url"; then
+		log "opened with xdg-open"
+		return 0
+	fi
+
+	if run_open_cmd "gio open" "$url"; then
+		log "opened with gio open"
+		return 0
+	fi
+
+	if run_open_cmd "open" "$url"; then
+		log "opened with open (macOS)"
+		return 0
+	fi
+
+	tmux display-message "tmux-fzf-url: opener bulunamadi (@fzf-url-open/BROWSER/xdg-open)"
+	log "failed: no usable opener found"
+	return 1
 }
+
+custom_open="${3:-}"
+log "script started, custom_open='$custom_open'"
 
 limit='screen'
 [[ $# -ge 2 ]] && limit=$2
@@ -64,10 +135,10 @@ items=$(
 
 [ -z "$items" ] && tmux display 'tmux-fzf-url: no URLs found' && exit
 
-echo "URL'ler bulundu: $(echo "$items" | wc -l) adet" >>"$LOG_FILE"
+log "found URLs: $(echo "$items" | wc -l)"
 
 fzf_filter <<<"$items" | awk '{print $2}' |
 	while read -r chosen; do
-		echo "Seçilen URL: $chosen" >>"$LOG_FILE"
+		log "selected URL: $chosen"
 		open_url "$chosen"
 	done
